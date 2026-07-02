@@ -1,0 +1,9 @@
+services:
+  bsc-scanner:
+    build: .
+    container_name: bsc-scanner
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data

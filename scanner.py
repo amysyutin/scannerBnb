@@ -4,9 +4,10 @@ import time
 import requests
 
 RPC_URL = os.getenv("RPC_URL", "https://data-seed-prebsc-1-s1.bnbchain.org:8545")
-CURSOR_FILE = "cursor.json"
-CONFIRMATIONS = 3
-SLEEP_SECONDS = 3
+CURSOR_FILE = os.getenv("CURSOR_FILE", "cursor.json")
+CONFIRMATIONS = int(os.getenv("CONFIRMATIONS", "3"))
+SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "3"))
+
 
 
 def rpc(method, params=None):
