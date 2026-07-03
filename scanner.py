@@ -122,8 +122,8 @@ def get_block(block_number):
 
 
 def main():
-    start_http_server(METRICS_PORT)
-    print(f"Metrics server started on port {METRICS_PORT}")
+    start_http_server(METRICS_PORT, addr="0.0.0.0")
+    print(f"Metrics server started on 0.0.0.0:{METRICS_PORT}")
     cursor = load_cursor()
 
     if cursor is None:
