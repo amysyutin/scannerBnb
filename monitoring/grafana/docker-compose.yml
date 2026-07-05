@@ -1,0 +1,17 @@
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-bsc
+    restart: unless-stopped
+    environment:
+      - GF_PLUGINS_AUTO_UPDATE=false 
+    ports:
+      - "127.0.0.1:3003:3000"
+    volumes:
+      - ./data:/var/lib/grafana
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    external: true

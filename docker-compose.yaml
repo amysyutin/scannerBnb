@@ -9,3 +9,9 @@ services:
       - ./data:/app/data
     ports:
       - "127.0.0.1:9105:${METRICS_PORT:-8002}"
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    external: true
