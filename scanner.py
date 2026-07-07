@@ -42,6 +42,32 @@ PROCESSED_BLOCKS = Counter(
     "Total number of processed blocks",
 )
 
+PROCESSED_TRANSACTIONS = Counter(
+    "bsc_scanner_processed_transactions_total",
+    "Total number of processed transactions",
+)
+
+SCANNER_RPC_FAILURES = Counter(
+    "bsc_scanner_rpc_failures_total",
+    "Total RPC failures by error type",
+    ["error_type"],
+)
+
+CURRENT_BLOCK_PROCESSING_SECONDS = Gauge(
+    "bsc_scanner_current_block_processing_seconds",
+    "Processing duration of the current or last processed block in seconds",
+)
+
+LAST_SUCCESS_TIMESTAMP = Gauge(
+    "bsc_scanner_last_success_timestamp",
+    "Unix timestamp of the last successfully processed block",
+)
+
+SCANNER_UP = Gauge(
+    "bsc_scanner_up",
+    "Whether the scanner process is running",
+)
+
 RPC_REQUESTS = Counter(
     "bsc_rpc_requests_total",
     "Total RPC requests",
@@ -66,6 +92,21 @@ BLOCK_PROCESSING_TIME = Histogram(
 )
 
 
+def rpc_error_type(exc, status):
+    if status == "rpc_error":
+        return "rpc_error"
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return "http_error"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "connection_error"
+    if isinstance(exc, requests.exceptions.RequestException):
+        return "request_error"
+    if isinstance(exc, ValueError):
+        return "invalid_json"
+    return "unknown"
+
 
 def rpc(method, params=None):
     payload = {
@@ -89,10 +130,11 @@ def rpc(method, params=None):
 
         return data["result"]
 
-    except Exception:
+    except Exception as exc:
         if status == "success":
             status = "error"
         RPC_ERRORS.labels(method=method).inc()
+        SCANNER_RPC_FAILURES.labels(error_type=rpc_error_type(exc, status)).inc()
         raise
 
     finally:
@@ -124,6 +166,7 @@ def get_block(block_number):
 def main():
     start_http_server(METRICS_PORT, addr="0.0.0.0")
     print(f"Metrics server started on 0.0.0.0:{METRICS_PORT}")
+    SCANNER_UP.set(1)
     cursor = load_cursor()
 
     if cursor is None:
@@ -148,9 +191,14 @@ def main():
 
         next_block = cursor + 1
 
-        with BLOCK_PROCESSING_TIME.time():
+        block_processing_start = time.time()
+        try:
             block = get_block(next_block)
             tx_count = len(block.get("transactions", []))
+        finally:
+            block_processing_seconds = time.time() - block_processing_start
+            CURRENT_BLOCK_PROCESSING_SECONDS.set(block_processing_seconds)
+            BLOCK_PROCESSING_TIME.observe(block_processing_seconds)
 
         save_cursor(next_block)
         cursor = next_block
@@ -159,6 +207,8 @@ def main():
         SCANNER_LAG.set(head - next_block)
         LAST_BLOCK_TX_COUNT.set(tx_count)
         PROCESSED_BLOCKS.inc()
+        PROCESSED_TRANSACTIONS.inc(tx_count)
+        LAST_SUCCESS_TIMESTAMP.set(time.time())
 
         print(
             f"processed block={next_block} "
