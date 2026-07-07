@@ -9,6 +9,8 @@ RPC_URL = os.getenv("RPC_URL", "https://data-seed-prebsc-1-s1.bnbchain.org:8545"
 CURSOR_FILE = os.getenv("CURSOR_FILE", "cursor.json")
 CONFIRMATIONS = int(os.getenv("CONFIRMATIONS", "3"))
 SLEEP_SECONDS = int(os.getenv("SLEEP_SECONDS", "3"))
+HEAD_REFRESH_SECONDS = int(os.getenv("HEAD_REFRESH_SECONDS", "5"))
+FULL_TX = os.getenv("FULL_TX", "false").lower() == "true"
 
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8000"))
 
@@ -35,6 +37,11 @@ SCANNER_LAG = Gauge(
 LAST_BLOCK_TX_COUNT = Gauge(
     "bsc_scanner_last_block_tx_count",
     "Transaction count in the last processed block",
+)
+
+CURRENT_BLOCK = Gauge(
+    "bsc_scanner_current_block",
+    "Block currently being processed by scanner",
 )
 
 PROCESSED_BLOCKS = Counter(
@@ -160,7 +167,7 @@ def save_cursor(block_number):
 
 
 def get_block(block_number):
-    return rpc("eth_getBlockByNumber", [hex(block_number), True])
+    return rpc("eth_getBlockByNumber", [hex(block_number), FULL_TX])
 
 
 def main():
@@ -169,53 +176,72 @@ def main():
     SCANNER_UP.set(1)
     cursor = load_cursor()
 
+    head = hex_to_int(rpc("eth_blockNumber"))
+    safe_head = head - CONFIRMATIONS
+    last_head_refresh = time.time()
+    CHAIN_HEAD.set(head)
+    SAFE_HEAD.set(safe_head)
+
     if cursor is None:
-        head = hex_to_int(rpc("eth_blockNumber"))
         cursor = head - 10
         save_cursor(cursor)
 
     print(f"Starting from block: {cursor}")
 
     while True:
-        head = hex_to_int(rpc("eth_blockNumber"))
-        safe_head = head - CONFIRMATIONS
-        CHAIN_HEAD.set(head)
-        SAFE_HEAD.set(safe_head)
-        LAST_PROCESSED_BLOCK.set(cursor)
-        SCANNER_LAG.set(head - cursor)
-
-        if cursor >= safe_head:
-            print(f"No new safe blocks. head={head}, cursor={cursor}")
-            time.sleep(SLEEP_SECONDS)
-            continue
-
-        next_block = cursor + 1
-
-        block_processing_start = time.time()
         try:
-            block = get_block(next_block)
-            tx_count = len(block.get("transactions", []))
-        finally:
-            block_processing_seconds = time.time() - block_processing_start
-            CURRENT_BLOCK_PROCESSING_SECONDS.set(block_processing_seconds)
-            BLOCK_PROCESSING_TIME.observe(block_processing_seconds)
+            now = time.time()
 
-        save_cursor(next_block)
-        cursor = next_block
+            if cursor >= safe_head or now - last_head_refresh >= HEAD_REFRESH_SECONDS:
+                head = hex_to_int(rpc("eth_blockNumber"))
+                safe_head = head - CONFIRMATIONS
+                last_head_refresh = now
 
-        LAST_PROCESSED_BLOCK.set(next_block)
-        SCANNER_LAG.set(head - next_block)
-        LAST_BLOCK_TX_COUNT.set(tx_count)
-        PROCESSED_BLOCKS.inc()
-        PROCESSED_TRANSACTIONS.inc(tx_count)
-        LAST_SUCCESS_TIMESTAMP.set(time.time())
+                CHAIN_HEAD.set(head)
+                SAFE_HEAD.set(safe_head)
 
-        print(
-            f"processed block={next_block} "
-            f"tx_count={tx_count} "
-            f"head={head} "
-            f"lag={head - next_block}"
-        )
+            LAST_PROCESSED_BLOCK.set(cursor)
+            SCANNER_LAG.set(head - cursor)
+
+            if cursor >= safe_head:
+                print(f"No new safe blocks. head={head}, cursor={cursor}")
+                time.sleep(SLEEP_SECONDS)
+                continue
+
+            next_block = cursor + 1
+            CURRENT_BLOCK.set(next_block)
+
+            block_start = time.time()
+
+            with BLOCK_PROCESSING_TIME.time():
+                block = get_block(next_block)
+                tx_count = len(block.get("transactions", []))
+
+            block_duration = time.time() - block_start
+
+            save_cursor(next_block)
+            cursor = next_block
+
+            LAST_PROCESSED_BLOCK.set(next_block)
+            SCANNER_LAG.set(head - next_block)
+            LAST_BLOCK_TX_COUNT.set(tx_count)
+            PROCESSED_BLOCKS.inc()
+            PROCESSED_TRANSACTIONS.inc(tx_count)
+            LAST_SUCCESS_TIMESTAMP.set(time.time())
+            CURRENT_BLOCK_PROCESSING_SECONDS.set(block_duration)
+
+            print(
+                f"processed block={next_block} "
+                f"tx_count={tx_count} "
+                f"head={head} "
+                f"lag={head - next_block}"
+            )
+
+        except Exception as e:
+            print(f"ERROR: {e}")
+            SCANNER_UP.set(0)
+            time.sleep(SLEEP_SECONDS)
+            SCANNER_UP.set(1)
 
 
 if __name__ == "__main__":
